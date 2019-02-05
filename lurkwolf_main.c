@@ -11,12 +11,14 @@
 #include <ncurses.h>
 #include <signal.h>
 #include<ctype.h>
+#include<time.h>
 
 #include "lurk.h"
 
-
+#define OTHER_MAX 64
 struct receive_info { //Struct for sending most windows and socket
 	int skt;
+	WINDOW* input;
 	WINDOW* log;
 	WINDOW* header;
 	WINDOW* pstatus;
@@ -36,18 +38,21 @@ pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
 // A variety of global variables
 int skt;
+float version = 1.04;
 char ip[64];
 char port[8];
 char name[32];
 int max_x, max_y, log_x, log_y;
 int new_x, new_y;
-char input[1024 * 1024];
+char input[1024];
 bool connected, started;
 int points;
 int lastroom = 0;
 bool verbose = false;
 bool characcept = false;
 bool quickmsg = false;
+bool changetext = true;
+bool leftroom = false;
 
 //Extra Window Flags
 bool extrawin;
@@ -66,30 +71,56 @@ int connectioncount = 1;
 int enemycount = 0;
 int friendcount = 0;
 
-const int maxstuff = 64;
+
+
+char pastcommand[100];
 
 //Struct arrays for storing stuff in current room
-struct character players[64];
-struct character enemies[64];
-struct room rooms[64];
-struct character friends[64];
+struct character players[OTHER_MAX];
+struct character enemies[OTHER_MAX];
+struct room rooms[OTHER_MAX];
+struct character friends[OTHER_MAX];
+
+//const size_t charactersize = sizeof(struct character) * OTHER_MAX;
+//const size_t roomsize = sizeof(struct room) * OTHER_MAX;
+
+//struct character* players = malloc(charactersize);
+//struct character* enemies = malloc(charactersize);
+//struct room* rooms = malloc(roomsize);
+//struct character* friends = malloc(charactersize);
 
 void newgetstr(WINDOW* win, char* in){
 	int c;
 	int xpos = 0, ypos = 0, homex = 0, len = 0;
 	getyx(win,ypos,homex);
 	xpos = homex;
+	wmove(win,0,1);
 	for(;;){
-		//in[xpos] = '\0'; 
-		c = wgetch(win);
+		//in[xpos] = '\0';
+		wmove(win,ypos,xpos);
+		c = getch();
+		wprintw(win, "%c",c);
+		wrefresh(win);
 		if(c == KEY_ENTER || c == '\n' || c == '\r' || c == 410){
+			wclear(win);
+			wrefresh(win);
 			break;
-		}else if(isprint(c)){
+		}else if(isprint(c) && c != KEY_UP){
 			//memmove(in+xpos-homex+1, in+xpos-homex, len-xpos-homex);
 			in[xpos-homex] = c;
 			len++;
 			xpos++;
-		}else if(c == KEY_LEFT ){
+		}else if(c == KEY_UP){
+			if(!(pastcommand[0] == 0)){
+				strncpy(in, pastcommand, 100);
+				len = strlen(in);
+				xpos = strlen(in)+1;
+				wmove(win, ypos, xpos);
+				mvwprintw(win, 0, 1, in);
+				wrefresh(win);
+			}
+		}
+		/*else if(c == KEY_LEFT ){
 			if(xpos > homex){
 				xpos -= 1;
 				wmove(win,ypos,xpos);
@@ -99,7 +130,7 @@ void newgetstr(WINDOW* win, char* in){
 				xpos += 1;
 				wmove(win,ypos,xpos);			
 			}
-		}else if(c == KEY_BACKSPACE){
+		}*/else if(c == KEY_BACKSPACE){
 			xpos -= 1;
 			if(xpos < homex){
 				xpos += 1;
@@ -108,6 +139,9 @@ void newgetstr(WINDOW* win, char* in){
 			}		
 			if(xpos >= homex){
 				len -= 1;
+				if (len < 0){
+					len = 0;				
+				}
 				wmove(win,ypos,xpos);
 				wprintw(win, " ");
 				wrefresh(win);				
@@ -115,7 +149,10 @@ void newgetstr(WINDOW* win, char* in){
 			}
 		}
 	}
-	in[len] = '\0';
+	in[len] = 0;
+	if(in[0] == '/'){
+		strncpy(pastcommand,in, 100);
+	}
 	
 }
 
@@ -123,8 +160,8 @@ void newgetstr(WINDOW* win, char* in){
 char* request(WINDOW* in, char* enter){
 	input[0] = 0;
 	mvwprintw(in,0,0,"%s",enter);
-	wgetstr(in, input);
-	//newgetstr(in, input);
+	//wgetstr(in, input);
+	newgetstr(in, input);
 	wclear(in);
 	return input;
 }
@@ -133,9 +170,12 @@ char* request(WINDOW* in, char* enter){
 void get_input(void* arg){
 	struct input_info* ii = (struct input_info*)arg;
 	input[0] = 0;
-	mvwprintw(ii->inputwin,0,0,">");
-	wgetstr(ii->inputwin, input);
-	//newgetstr(ii->inputwin, input);
+	//mvwprintw(ii->inputwin,0,0,">");
+	mvwaddstr(ii->inputwin,0,0,">");
+	wmove(ii->inputwin,0,1);
+	wrefresh(ii->inputwin);
+	//wgetstr(ii->inputwin, input);
+	newgetstr(ii->inputwin, input);
 	wprintw(ii->log,"<%s> %s\n", players[0].name, input);
 	wrefresh(ii->log);
 	wclear(ii->inputwin);
@@ -155,7 +195,7 @@ void handle_signal(int signal){
 //Draws the header window with the program name, status, and extra window 1 mode
 void update_header(WINDOW *win){
 	wclear(win);
-	mvwprintw(win,0,0, "LurkWolf Client"); // Program Title
+	mvwprintw(win,0,0, "LurkWolf Client %.2f",version); // Program Title
 	mvwprintw(win,0,max_x/2-22,"Status: "); // Program Status(just used for showing connected/disconnected + the IP and port)
 	if(connected){
 		wattron(win,COLOR_PAIR(1));		
@@ -168,7 +208,7 @@ void update_header(WINDOW *win){
 	}
 
 	if(extrawin){ // Extra Window 1 Mode display
-		char windowname[7];
+		char windowname[8];
 		if(extrawin1mode == 0) strcpy(windowname, "Players"); 
 		else if(extrawin1mode == 1) strcpy(windowname, "Enemies");
 		else if(extrawin1mode == 2) strcpy(windowname, "Rooms  ");
@@ -207,7 +247,7 @@ void update_pstatus(WINDOW* win){
 		}
 	}
 	if(extrawin){ // Extra Window 2 Mode display
-		char windowname[7];
+		char windowname[8];
 		if(extrawin2mode == 0) strcpy(windowname, "Players");
 		else if(extrawin2mode == 1) strcpy(windowname, "Enemies");
 		else if(extrawin2mode == 2) strcpy(windowname, "Rooms  ");
@@ -432,6 +472,15 @@ void update_extrawin(WINDOW* win1, WINDOW* win2){
 	}
 }
 
+
+void removeplayer(int playernum){
+	for(int i=playernum; i<playercount-1; i++){
+		memmove(&players[i],&players[i+1],sizeof(struct character));
+		playercount--;
+	}
+}
+
+
 //Server input thread. It gets stuff from server, stores it, and prints it(updating windows in the process)
 void *server_handler(void *arg){
 	struct receive_info* outputs = (struct receive_info*)arg;
@@ -451,6 +500,7 @@ void *server_handler(void *arg){
 		update_pstatus(outputs->pstatus);
 		update_extrawin(outputs->extrawindow1, outputs->extrawindow2);
 		doupdate();
+		//wmove(outputs->input,0,1);
 		//READ FIRST BYTE
 		pthread_mutex_unlock(&mutex);
 		connectcheck = read(outputs->skt, &type, 1);
@@ -462,6 +512,7 @@ void *server_handler(void *arg){
 			wrefresh(outputs->log);
 			characcept = false;
 			started = false;
+			pthread_mutex_unlock(&mutex);
 			break;
 
 		}
@@ -476,7 +527,7 @@ void *server_handler(void *arg){
 			struct room tempr = {0};
 			lurk_connection(skt,1,&tempr);
 			if(verbose){
-				wprintw(outputs->log, "<debug> Received room:\n",tempr.name);
+				wprintw(outputs->log, "<debug> Received connection:\n",tempr.name);
 				wprintw(outputs->log, "\tName: %s\n",tempr.name);
 				wprintw(outputs->log, "\tDescription: %s\n",tempr.desc);
 				wprintw(outputs->log, "\tNumber: %d|",tempr.number);
@@ -572,22 +623,23 @@ void *server_handler(void *arg){
 							wprintw(outputs->log, "<debug> Found enemy %s stored. Updating...\n",tempc.name);
 							wrefresh(outputs->log);
 						}
-
-						if(tempc.health<enemies[i].health){
-							wprintw(outputs->log, "<enemy> %s lost %d health, remaining: %d\n",tempc.name,enemies[i].health-tempc.health, tempc.health);
-							wrefresh(outputs->log);
-						}
-						if(tempc.health>enemies[i].health){
-							wprintw(outputs->log, "<enemy> %s gained %d health, remaining: %d\n",tempc.name,tempc.health-enemies[i].health, tempc.health);
-							wrefresh(outputs->log);
-						}
-						if((getbit(7,enemies[i].flags) != getbit(7,tempc.flags)) && getbit(7,tempc.flags)){
-							wprintw(outputs->log, "<enemy> %s Came to life! Health: %d\n",tempc.name, tempc.health);
-							wrefresh(outputs->log);
-						}
-						if((getbit(7,enemies[i].flags) != getbit(7,tempc.flags)) && !getbit(7,tempc.flags)){
-							wprintw(outputs->log, "<enemy> %s died!\n",tempc.name);
-							wrefresh(outputs->log);
+						if(changetext){
+							if(tempc.health<enemies[i].health){
+								wprintw(outputs->log, "<enemy> %s lost %d health, remaining: %d\n",tempc.name,enemies[i].health-tempc.health, tempc.health);
+								wrefresh(outputs->log);
+							}
+							if(tempc.health>enemies[i].health){
+								wprintw(outputs->log, "<enemy> %s gained %d health, remaining: %d\n",tempc.name,tempc.health-enemies[i].health, tempc.health);
+								wrefresh(outputs->log);
+							}
+							if((getbit(7,enemies[i].flags) != getbit(7,tempc.flags)) && getbit(7,tempc.flags)){
+								wprintw(outputs->log, "<enemy> %s Came to life! Health: %d\n",tempc.name, tempc.health);
+								wrefresh(outputs->log);
+							}
+							if((getbit(7,enemies[i].flags) != getbit(7,tempc.flags)) && !getbit(7,tempc.flags)){
+								wprintw(outputs->log, "<enemy> %s died!\n",tempc.name);
+								wrefresh(outputs->log);
+							}
 						}
 
 						enemies[i] = tempc;
@@ -604,6 +656,7 @@ void *server_handler(void *arg){
 					wrefresh(outputs->log);
 					enemies[enemycount] = tempc;
 					enemycount++;
+					if(enemycount >= OTHER_MAX-1) enemycount--;
 				}
 				stored = false;
 				wattroff(outputs->log,COLOR_PAIR(2));
@@ -615,30 +668,31 @@ void *server_handler(void *arg){
 					wprintw(outputs->log, "<debug> Found user player %s stored. Updating...\n",tempc.name);
 					wrefresh(outputs->log);
 				}
-
-				if((getbit(7,players[0].flags) != getbit(7,tempc.flags)) && !getbit(7,tempc.flags)){
-					wprintw(outputs->log, "<local> You died!\n");
-					wrefresh(outputs->log);
-				}
-				else if(tempc.health>players[0].health){
-					wprintw(outputs->log, "<local> You gained %d health, remaining: %d\n",tempc.health-players[0].health, tempc.health);
-					wrefresh(outputs->log);
-				}
-				if(tempc.health<players[0].health){
-					wprintw(outputs->log, "<local> You lost %d health, remaining: %d\n",players[0].health-tempc.health, tempc.health);
-					wrefresh(outputs->log);
-				}
-				if((getbit(7,players[0].flags) != getbit(7,tempc.flags)) && getbit(7,tempc.flags)){
-					wprintw(outputs->log, "<local> You came to life! Health: %d\n", tempc.health);
-					wrefresh(outputs->log);
-				}
-				if(players[0].gold < tempc.gold){
-					wprintw(outputs->log, "<local> You got %d gold! Gold: %d\n", tempc.gold-players[0].gold,tempc.gold);
-					wrefresh(outputs->log);
-				}
-				if(players[0].gold > tempc.gold){
-					wprintw(outputs->log, "<local> You lost %d gold! Gold: %d\n", players[0].gold - tempc.gold,tempc.gold);
-					wrefresh(outputs->log);
+				if(changetext){
+					if((getbit(7,players[0].flags) != getbit(7,tempc.flags)) && !getbit(7,tempc.flags)){
+						wprintw(outputs->log, "<local> You died!\n");
+						wrefresh(outputs->log);
+					}
+					else if(tempc.health>players[0].health){
+						wprintw(outputs->log, "<local> You gained %d health, remaining: %d\n",tempc.health-players[0].health, tempc.health);
+						wrefresh(outputs->log);
+					}
+					if(tempc.health<players[0].health){
+						wprintw(outputs->log, "<local> You lost %d health, remaining: %d\n",players[0].health-tempc.health, tempc.health);
+						wrefresh(outputs->log);
+					}
+					if((getbit(7,players[0].flags) != getbit(7,tempc.flags)) && getbit(7,tempc.flags)){
+						wprintw(outputs->log, "<local> You came to life! Health: %d\n", tempc.health);
+						wrefresh(outputs->log);
+					}
+					if(players[0].gold < tempc.gold){
+						wprintw(outputs->log, "<local> You got %d gold! Gold: %d\n", tempc.gold-players[0].gold,tempc.gold);
+						wrefresh(outputs->log);
+					}
+					if(players[0].gold > tempc.gold){
+						wprintw(outputs->log, "<local> You lost %d gold! Gold: %d\n", players[0].gold - tempc.gold,tempc.gold);
+						wrefresh(outputs->log);
+					}
 				}
 				
 
@@ -652,25 +706,40 @@ void *server_handler(void *arg){
 							wprintw(outputs->log, "<debug> Found player %s stored. Updating...\n",tempc.name);
 							wrefresh(outputs->log);
 						}
-
-						if(tempc.health<players[i].health){
-							wprintw(outputs->log, "<player> %s lost %d health, remaining: %d\n",tempc.name,players[i].health-tempc.health, tempc.health);
-							wrefresh(outputs->log);
+						if(changetext){
+							if(tempc.health<players[i].health){
+								wprintw(outputs->log, "<player> %s lost %d health, remaining: %d\n",tempc.name,players[i].health-tempc.health, tempc.health);
+								wrefresh(outputs->log);
+							}
+							if(tempc.health>players[i].health){
+								wprintw(outputs->log, "<player> %s gained %d health, remaining: %d\n",tempc.name,tempc.health-players[i].health, tempc.health);
+								wrefresh(outputs->log);
+							}
+							if((getbit(7,players[i].flags) != getbit(7,tempc.flags)) && getbit(7,tempc.flags)){
+								wprintw(outputs->log, "<player> %s Came to life! Health: %d\n",tempc.name, tempc.health);
+								wrefresh(outputs->log);
+							}
+							if((getbit(7,players[i].flags) != getbit(7,tempc.flags)) && !getbit(7,tempc.flags)){
+								wprintw(outputs->log, "<player> %s died!\n",tempc.name);
+								wrefresh(outputs->log);
+							}
+							if(players[i].room != tempc.room){	
+								leftroom = true;
+								int changedroom;
+								for(int i = 0; i<connectioncount; i++){
+									if(tempc.room == rooms[i].number){
+										changedroom = i;
+										break;
+									}
+								}
+								
+								wprintw(outputs->log, "<player> %s went to %s!\n",tempc.name, rooms[changedroom].name);
+								wrefresh(outputs->log);
+							}
 						}
-						if(tempc.health>players[i].health){
-							wprintw(outputs->log, "<player> %s gained %d health, remaining: %d\n",tempc.name,tempc.health-players[i].health, tempc.health);
-							wrefresh(outputs->log);
-						}
-						if((getbit(7,players[i].flags) != getbit(7,tempc.flags)) && getbit(7,tempc.flags)){
-							wprintw(outputs->log, "<player> %s Came to life! Health: %d\n",tempc.name, tempc.health);
-							wrefresh(outputs->log);
-						}
-						if((getbit(7,players[i].flags) != getbit(7,tempc.flags)) && !getbit(7,tempc.flags)){
-							wprintw(outputs->log, "<player> %s died!\n",tempc.name);
-							wrefresh(outputs->log);
-						}
-
-						players[i] = tempc;
+					
+						if(!leftroom)players[i] = tempc;
+						else removeplayer(i);
 						stored = true;
 						break;
 					}
@@ -684,6 +753,7 @@ void *server_handler(void *arg){
 					wrefresh(outputs->log);
 					players[playercount] = tempc;
 					playercount++;
+					if(playercount >= OTHER_MAX) playercount--;
 				}
 				stored = false;
 		
@@ -769,9 +839,8 @@ void *server_handler(void *arg){
 			wrefresh(outputs->log);
 			
 		}
-		wrefresh(outputs->log);
-		wmove(outputs->inputwin,0,1);
-
+		//wrefresh(outputs->log);
+		
 	}
 }
 
@@ -796,7 +865,7 @@ void resize_window(void *arg){
 	
 			
 		getmaxyx(prfi->log,log_y,log_x);
-		if(log_y >= 35 && log_x >=96){ //Extra window stuff
+		if(log_y > 32 && log_x >=96){ //Extra window stuff
 			extrawin1advance = 0;
 			extrawin2advance = 0;
 			wresize(prfi->log, log_y, max_x-35);
@@ -807,13 +876,18 @@ void resize_window(void *arg){
 			extrawin = true;
 		}
 		else extrawin = false;
-		refresh();
+		wnoutrefresh(prfi->header);
+		wnoutrefresh(prfi->log);
+		wnoutrefresh(prfi->pstatus);
+		wnoutrefresh(prfi->inputwin);
+		wnoutrefresh(prfi->extrawindow1);
+		wnoutrefresh(prfi->extrawindow2);
 	}
 }
 
 //Main loop that sets up curses, sets up the connection, starts the server thread, and listens for user input along with updating the windows
 int main(int argc, char ** argv){
-
+	pastcommand[0] = 0;
 	//curses start
 	signal(SIGINT,handle_signal);
 	initscr();
@@ -824,14 +898,14 @@ int main(int argc, char ** argv){
 	WINDOW *inputwin = newwin(1, max_x, max_y-1, 0);
 	getmaxyx(log,log_y,log_x);
 	scrollok(log,true);
-	//noecho();
-	//cbreak();
+	noecho();
+	cbreak();
 	keypad(inputwin,true);
 	
 	
 	WINDOW *extrawindow1 = newwin(log_y/2-1, 35, 2, max_x-35);
 	WINDOW *extrawindow2 = newwin(log_y/2+(log_y%2)+1, 35, log_y/2+1, max_x-35);
-	if(log_y >= 33 && log_x >=96){
+	if(log_y > 32 && log_x >=96){
 		wresize(log, log_y, max_x-35);
 		extrawin = true;
 	}
@@ -870,11 +944,28 @@ int main(int argc, char ** argv){
 
 
 	//Start up and connect
+	mvwprintw(log,log_y-1,0,"			      _-----_\n");
+	mvwprintw(log,log_y-1,0,"			     /       \\\n");
+	mvwprintw(log,log_y-1,0,"			    |         |\n");
+	mvwprintw(log,log_y-1,0,"	LurkWolf	    |         |\n");
+	mvwprintw(log,log_y-1,0,"			     \\       /\n");
+	mvwprintw(log,log_y-1,0,"			      -------\n");
+	mvwprintw(log,log_y-1,0,"         _\n");
+	mvwprintw(log,log_y-1,0,"      __/ V|\n");
+	mvwprintw(log,log_y-1,0,"      \\ )  |\n");
+	mvwprintw(log,log_y-1,0,"      /    /\n");
+	mvwprintw(log,log_y-1,0,"     /    //\n");
+	mvwprintw(log,log_y-1,0,"    |    //|\n");
+	mvwprintw(log,log_y-1,0,"    /     ||\n");
+	mvwprintw(log,log_y-1,0,"   /      ||\n");
+	mvwprintw(log,log_y-1,0," (@@@@@D__|_}\n\n\n");
+
+
 	mvwprintw(log,log_y-1,0, "<local> Welcome to LurkWolf Made by Alexander Romero 2018\n");//Initial Splash
 	if(argc < 3){//If ip and port are not entered on the command line
 		char tempip[32];
 		char tempport[32];
-		typeconnect:
+typeconnect:
 		wprintw(log, "<local> Please enter connection address followed by the port\n");
 		wrefresh(log);
 		strcpy(tempip,request(inputwin,"IP: "));
@@ -920,6 +1011,7 @@ int main(int argc, char ** argv){
 	//Set up receive_info struct for server thread
 	struct receive_info rinfo;
 	rinfo.skt = skt;
+	rinfo.input = inputwin;
 	rinfo.log = log;
 	rinfo.pstatus = pstatus;
 	rinfo.inputwin = inputwin;
@@ -936,9 +1028,9 @@ int main(int argc, char ** argv){
 
 	pthread_mutex_lock(&mutex);
 	for(;;){ // Main loop starts here
-		if(connected == false){
+		/*if(connected == false){
 			goto typeconnect;//Kicks you back if disconnected
-		}
+		}*/
 		resize_window(&rinfo); //Update stuff
 		update_header(header);
 		update_pstatus(pstatus);
@@ -978,8 +1070,10 @@ int main(int argc, char ** argv){
 			//Do nothing!
 		}
 		else{
-			char*token;
-			char*stay;
+			char* stay;
+			char* token;
+			char yes[64];
+			token = yes;
 			token = strtok_r(input," ",&stay); //Set up splitting the input into tokens for multi word inout
 
 			//Begin lurk commands
@@ -1040,7 +1134,12 @@ int main(int argc, char ** argv){
 				wprintw(log, "<%s> %s\n",players[0].name, send.msg);
 				wrefresh(log);
 			}
-			else if(!strcmp(input,"/quit")){ //Nicely quits using the lurk_leave command and all the good stuff
+			else if(!strcmp(input,"/connect")){
+				if(!connected){
+					goto typeconnect;
+				}
+			}
+			else if(!strcmp(input,"/quit") || !strcmp(input,"/q") || !strcmp(input,"/exit")){ //Nicely quits using the lurk_leave command and all the good stuff
 				if(!strcmp(request(inputwin,"Really quit?(y/n): "),"y")){
 					wprintw(log,"<local> Quitting...\n");
 					wrefresh(log);
@@ -1051,67 +1150,16 @@ int main(int argc, char ** argv){
 				}
 			}
 			else if(!strcmp(input,"/login")){ //Shortcut for /make. just gets name and uses default info to send to server
-				wprintw(log,"<local> Logging in...\n");
-				token = strtok_r(NULL,"",&stay);
-				if(token == NULL)strcpy(players[0].name, request(inputwin,"Enter Name: "));//If no name was given for second token
-				else strcpy(players[0].name,token);
+				if(!characcept){			
+					wprintw(log,"<local> Logging in...\n");
+					token = strtok_r(NULL,"",&stay);
+					if(token == NULL)strcpy(players[0].name, request(inputwin,"Enter Name: "));//If no name was given for second token
+					else strcpy(players[0].name,token);
 
-				players[0].attack = points*.6;
-				players[0].defence = points*.2;
-				players[0].regen = points*.2;
+					players[0].attack = points*.6;
+					players[0].defence = points*.2;
+					players[0].regen = points*.2;
 				
-				wprintw(log,"<local> Sending...\n");
-				wrefresh(log);
-				if(verbose){
-					wprintw(log,"<debug> Sending character:\n");
-					wprintw(log,"\tName: %s\n",players[0].name);
-					wprintw(log,"\tFlags: %s\n",itobstr(players[0].flags,input));
-					wprintw(log,"\tAttack: %d\n",players[0].attack);
-					wprintw(log,"\tDefence: %d\n",players[0].defence);
-					wprintw(log,"\tRegen: %d\n",players[0].regen);
-					wprintw(log,"\tHealth: %d\n",players[0].health);
-					wprintw(log,"\tGold: %d\n",players[0].gold);
-					wprintw(log,"\tRoom: %d\n",players[0].room);
-					wprintw(log,"\tDesc Length: %d\n",players[0].descl);
-					wprintw(log,"\tDescription: %s\n",players[0].desc);
-					wrefresh(log);
-				}
-				int type = 10;
-				lurk_character(skt,0,&players[0]);
-			}
-			else if(!strcmp(input,"/make")){ //Walks you through making a character packet leaving some things out like flags and the sort
-				wprintw(log,"<local> Creating character...\n");
-
-				wrefresh(log);
-				strcpy(players[0].name, request(inputwin,"Enter Name: "));
-				
-				strcpy(players[0].desc, request(inputwin,"Enter Description: "));
-				players[0].descl = strlen(players[0].desc) + 1;
-			
-				mvwprintw(pstatus,1,0,"Remaining points: %d     ", points);
-				wrefresh(pstatus);
-				players[0].attack = atoi(request(inputwin,"Enter Attack: "));
-	
-				mvwprintw(pstatus,1,0,"Remaining points: %d     ", points-players[0].attack);
-				wrefresh(pstatus);
-				players[0].defence = atoi(request(inputwin,"Enter Defense: "));
-	
-				mvwprintw(pstatus,1,0,"Remaining points: %d     ", points-players[0].attack-players[0].defence);
-				wrefresh(pstatus);
-				players[0].regen = atoi(request(inputwin,"Enter Regen: "));
-				
-				mvwprintw(pstatus,1,0,"                            ");
-				wrefresh(pstatus);
-				
-				wprintw(log,"\n<local> Name: %s\n", players[0].name);
-				wprintw(log,"\tDescription: %s\n", players[0].desc);
-				wprintw(log,"\tAttack: %d\n", players[0].attack);
-				wprintw(log,"\tDefense: %d\n", players[0].defence);
-				wprintw(log,"\tRegen: %d\n\n", players[0].regen);
-				wprintw(log,"<local> Is this correct?(y/n)\n");
-				wrefresh(log);
-				if(!strcmp(request(inputwin,"(y/n): "),"y")){
-	
 					wprintw(log,"<local> Sending...\n");
 					wrefresh(log);
 					if(verbose){
@@ -1119,7 +1167,7 @@ int main(int argc, char ** argv){
 						wprintw(log,"\tName: %s\n",players[0].name);
 						wprintw(log,"\tFlags: %s\n",itobstr(players[0].flags,input));
 						wprintw(log,"\tAttack: %d\n",players[0].attack);
-						wprintw(log,"\tDefence: %d\n",players[0].defence);
+						wprintw(log,"\tDefense: %d\n",players[0].defence);
 						wprintw(log,"\tRegen: %d\n",players[0].regen);
 						wprintw(log,"\tHealth: %d\n",players[0].health);
 						wprintw(log,"\tGold: %d\n",players[0].gold);
@@ -1128,11 +1176,80 @@ int main(int argc, char ** argv){
 						wprintw(log,"\tDescription: %s\n",players[0].desc);
 						wrefresh(log);
 					}
+					int type = 10;
 					lurk_character(skt,0,&players[0]);
-					
-					
 				}else{
-					wprintw(log,"<local> Type \"/make\" to try again\n");
+					wprintw(log,"<local> A character has already been accepted\n");
+					wrefresh(log);
+				}
+			}
+			else if(!strcmp(input,"/sendchar")){
+				if(characcept){
+					lurk_character(skt,0,&players[0]);
+					wprintw(log,"<local> Sent character packet\n");
+				}else{
+					wprintw(log,"<local> A character needs to be accepted first. Try /login or /make.\n");
+				}
+			}
+			else if(!strcmp(input,"/make")){ //Walks you through making a character packet leaving some things out like flags and the sort
+				if(!characcept){			
+					wprintw(log,"<local> Creating character...\n");
+
+					wrefresh(log);
+					strcpy(players[0].name, request(inputwin,"Enter Name: "));
+				
+					strcpy(players[0].desc, request(inputwin,"Enter Description: "));
+					players[0].descl = strlen(players[0].desc) + 1;
+			
+					mvwprintw(pstatus,1,0,"Remaining points: %d     ", points);
+					wrefresh(pstatus);
+					players[0].attack = atoi(request(inputwin,"Enter Attack: "));
+	
+					mvwprintw(pstatus,1,0,"Remaining points: %d     ", points-players[0].attack);
+					wrefresh(pstatus);
+					players[0].defence = atoi(request(inputwin,"Enter Defense: "));
+	
+					mvwprintw(pstatus,1,0,"Remaining points: %d     ", points-players[0].attack-players[0].defence);
+					wrefresh(pstatus);
+					players[0].regen = atoi(request(inputwin,"Enter Regen: "));
+				
+					mvwprintw(pstatus,1,0,"                            ");
+					wrefresh(pstatus);
+				
+					wprintw(log,"\n<local> Name: %s\n", players[0].name);
+					wprintw(log,"\tDescription: %s\n", players[0].desc);
+					wprintw(log,"\tAttack: %d\n", players[0].attack);
+					wprintw(log,"\tDefense: %d\n", players[0].defence);
+					wprintw(log,"\tRegen: %d\n\n", players[0].regen);
+					wprintw(log,"<local> Is this correct?(y/n)\n");
+					wrefresh(log);
+					if(!strcmp(request(inputwin,"(y/n): "),"y")){
+	
+						wprintw(log,"<local> Sending...\n");
+						wrefresh(log);
+						if(verbose){
+							wprintw(log,"<debug> Sending character:\n");
+							wprintw(log,"\tName: %s\n",players[0].name);
+							wprintw(log,"\tFlags: %s\n",itobstr(players[0].flags,input));
+							wprintw(log,"\tAttack: %d\n",players[0].attack);
+							wprintw(log,"\tDefense: %d\n",players[0].defence);
+							wprintw(log,"\tRegen: %d\n",players[0].regen);
+							wprintw(log,"\tHealth: %d\n",players[0].health);
+							wprintw(log,"\tGold: %d\n",players[0].gold);
+							wprintw(log,"\tRoom: %d\n",players[0].room);
+							wprintw(log,"\tDesc Length: %d\n",players[0].descl);
+							wprintw(log,"\tDescription: %s\n",players[0].desc);
+							wrefresh(log);
+						}
+						lurk_character(skt,0,&players[0]);
+					
+					
+					}else{
+						wprintw(log,"<local> Type \"/make\" to try again\n");
+						wrefresh(log);
+					}
+				}else{
+					wprintw(log,"<local> A character has already been accepted\n");
 					wrefresh(log);
 				}
 	
@@ -1161,7 +1278,6 @@ int main(int argc, char ** argv){
 				}
 				wrefresh(log);
 				lurk_fight(skt);
-				sleep(.1);
 			}
 			else if(!strcmp(input,"/pvp")){ //Sends pvp command to initiate battle with another player. uses tokens to get name
 				char name[32];
@@ -1235,11 +1351,11 @@ int main(int argc, char ** argv){
 				wprintw(log,"<local> Available to Loot:\n");
 				for(int i = 1; i < playercount; i++){
 					if(!getbit(7,players[i].flags)){
-						wprintw(log,"\t%d: %s\n",i,players[i].name);
+						wprintw(log,"\t%d: %s\n",i+1,players[i].name);
 					}
 				}
 				wrefresh(log);
-				lnumber = atoi(request(inputwin,"WhoToLoot: "));
+				lnumber = atoi(request(inputwin,"WhoToLoot: "))-1;
 				if(lnumber < 0)lnumber = 0;
 				if(lnumber > playercount)lnumber = 0;
 				wprintw(log,"<local> Looting: %s\n", players[lnumber].name);
@@ -1255,12 +1371,12 @@ int main(int argc, char ** argv){
 				char lnumber;
 				wprintw(log,"<local> Available to Loot:\n");
 				for(int i = 0; i < enemycount; i++){
-					if(!getbit(7,enemies[i].flags)){
-						wprintw(log,"\t%d: %s\n",i,enemies[i].name);
+					if(!getbit(7,enemies[i].flags) && enemies[i].gold != 0){
+						wprintw(log,"\t%d: %s\n",i+1,enemies[i].name);
 					}
 				}
 				wrefresh(log);
-				lnumber = atoi(request(inputwin,"WhoToLoot: "));
+				lnumber = atoi(request(inputwin,"WhoToLoot: "))-1;
 				if(lnumber < 0)lnumber = 0;
 				if(lnumber > enemycount)lnumber = 0;
 				wprintw(log,"<local> Looting: %s\n", enemies[lnumber].name);
@@ -1271,6 +1387,13 @@ int main(int argc, char ** argv){
 					wrefresh(log);
 				}
 				lurk_loot(skt,0,enemies[lnumber].name);
+			}
+			else if(!strcmp(input,"/lootall")){
+				for(int i = 0; i < enemycount; i++){
+					if(!getbit(7,enemies[i].flags) && enemies[i].gold != 0){
+						lurk_loot(skt,0,enemies[i].name);
+					}
+				}
 			}
 			else if(!strcmp(input,"/goto")){ //Gets room name and sends command to go to that room
 				char name[32];
@@ -1620,7 +1743,8 @@ int main(int argc, char ** argv){
 					}
 					else if(!strcmp(type,"room")){
 						for(int i = 0; i < connectioncount; i++){
-							
+							<server> Error 2: Name is already taken by an active player.
+
 							if(!strcmp(name,rooms[i].name)){
 								mvwprintw(log,log_y-1,0,"<local> Room: %s\n", rooms[i].name);
 								wprintw(log,"\tNumber: %d\n", rooms[i].number);
@@ -1742,7 +1866,7 @@ int main(int argc, char ** argv){
 				getmaxyx(extrawindow1,tempy,tempx);
 				if(extrawin1detail)extrawin1advance += tempy/2;
 				else extrawin1advance += tempy;
-				if(extrawin1advance > maxstuff) extrawin1advance = 0;
+				if(extrawin1advance > OTHER_MAX) extrawin1advance = 0;
 				wprintw(log,"<local> Extra window 1 is advanced by %d\n", extrawin1advance);
 				wrefresh(log);
 			}
@@ -1751,7 +1875,7 @@ int main(int argc, char ** argv){
 				getmaxyx(extrawindow2,tempy,tempx);
 				if(extrawin2detail)extrawin2advance += tempy/2;
 				else extrawin2advance += tempy;
-				if(extrawin2advance > maxstuff) extrawin2advance = 0;
+				if(extrawin2advance > OTHER_MAX) extrawin2advance = 0;
 				wprintw(log,"<local> Extra window 2 is advanced by %d\n", extrawin2advance);
 				wrefresh(log);
 			}
@@ -1783,6 +1907,12 @@ int main(int argc, char ** argv){
 				wprintw(log,"<local> Extra window 2 is advanced by %d\n", extrawin2advance);
 				wrefresh(log);
 			}
+			else if(!strcmp(input,"/charmsg")){
+				changetext = !changetext;
+				if(changetext)wprintw(log,"<local> Character differences enabled\n");
+				else wprintw(log,"<local> Character differences disabled\n");
+				wrefresh(log);
+			}
 			else if(!strcmp(input,"/itobstr")){ //Test deal for converting an integer to bit string
 				int a = atoi(request(inputwin,"Number: "));
 				wprintw(log,"<local> %d translates to %s\n", a, itobstr(a,input));
@@ -1790,15 +1920,36 @@ int main(int argc, char ** argv){
 			}
 			
 			else if(!strcmp(input,"/moo")){
-				wprintw(log,"<local>       ^-^    Moo \n");
-				wprintw(log,"\t    C/| |\\D           \n");
-				wprintw(log,"\t     (.._)------^^-   \n");
-				wprintw(log,"\t       \\ @@   @@ @ \\  \n");
-				wprintw(log,"\t        |  _@@@_(  |\\ \n");
-				wprintw(log,"\t        \\ |    YY\\ | *\n");
-				wprintw(log,"\t         W        W   \n");			
+				token = strtok_r(NULL,"",&stay);
+				if(token == NULL){
+					wprintw(log,"<local>       ^-^    Moo \n");
+					wprintw(log,"\t    C/| |\\D           \n");
+					wprintw(log,"\t     (.._)------^^-   \n");
+					wprintw(log,"\t       \\ @@   @@ @ \\  \n");
+					wprintw(log,"\t        |  _@@@_(  |\\ \n");
+					wprintw(log,"\t        \\ |    YY\\ | *\n");
+					wprintw(log,"\t         W        W   \n");
+				}else{
+					struct message tempmoo;
+					strcpy(tempmoo.sname,players[0].name);
+					strcpy(tempmoo.rname,token);
+					strcpy(tempmoo.msg,"\n");
+					strcat(tempmoo.msg,"\t      ^-^    Moo \n");
+					strcat(tempmoo.msg,"\t    C/| |\\D           \n");
+					strcat(tempmoo.msg,"\t     (.._)------^^-   \n");
+					strcat(tempmoo.msg,"\t       \\ @@   @@ @ \\  \n");
+					strcat(tempmoo.msg,"\t        |  _@@@_(  |\\ \n");
+					strcat(tempmoo.msg,"\t        \\ |    YY\\ | *\n");
+					strcat(tempmoo.msg,"\t         W        W   \n");
+					tempmoo.length = strlen(tempmoo.msg)+1;
+					lurk_message(skt,0,&tempmoo);
+				}		
 			}
-			
+			else if(!strcmp(input,"/clear")){
+				for(int i = 0; i<log_y; i++){
+					wprintw(log,"\n");
+				}
+			}			
 			else if(!strcmp(input,"/help")){ //Prints wall of text
 				wprintw(log,"<local> List of Wolflurk sever communication commands:\n");
 				wprintw(log,"\t/quit: Nicely closes out of the client with confirmation\n");
@@ -1838,6 +1989,7 @@ int main(int argc, char ** argv){
 				wprintw(log,"\t/popfriend: Removes last added friend\n");
 				wprintw(log,"\t/clrfriend: Removes all friends\n");
 				wprintw(log,"\t/friendmsg: Enables quick message for ease of messaging\n");
+				wprintw(log,"\t/charmsg: Changes if you see changes on characters\n");
 				wprintw(log,"\t/verbose: Enables verboseness good for debugging and the such\n");
 				wprintw(log,"\t/itobstr: For testing only, give it an integer and it will return a binary conversion(Might have a memory leak)\n");
 				wprintw(log,"\t/moo: moo\n");
@@ -1847,6 +1999,7 @@ int main(int argc, char ** argv){
 				wprintw(log,"<local> Couldn't find command: %s\n", input); // If input with / at the start is not found
 				wrefresh(log);
 			}
+			usleep(100000);
 	
 		}
 	}
