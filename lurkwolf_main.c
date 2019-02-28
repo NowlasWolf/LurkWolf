@@ -38,7 +38,7 @@ pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
 // A variety of global variables
 int skt;
-float version = 1.04;
+float version = 1.05;
 char ip[64];
 char port[8];
 char name[32];
@@ -476,8 +476,8 @@ void update_extrawin(WINDOW* win1, WINDOW* win2){
 void removeplayer(int playernum){
 	for(int i=playernum; i<playercount-1; i++){
 		memmove(&players[i],&players[i+1],sizeof(struct character));
-		playercount--;
 	}
+	playercount--;
 }
 
 
@@ -740,6 +740,7 @@ void *server_handler(void *arg){
 					
 						if(!leftroom)players[i] = tempc;
 						else removeplayer(i);
+						leftroom = false;
 						stored = true;
 						break;
 					}
@@ -1743,8 +1744,6 @@ typeconnect:
 					}
 					else if(!strcmp(type,"room")){
 						for(int i = 0; i < connectioncount; i++){
-							<server> Error 2: Name is already taken by an active player.
-
 							if(!strcmp(name,rooms[i].name)){
 								mvwprintw(log,log_y-1,0,"<local> Room: %s\n", rooms[i].name);
 								wprintw(log,"\tNumber: %d\n", rooms[i].number);
