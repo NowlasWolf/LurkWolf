@@ -34,17 +34,15 @@ struct input_info { //Struct that is used mostly for input
 };
 
 //Mutex Lock
-pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
 // A variety of global variables
 int skt;
-float version = 1.05;
+float version = 1.06;
 char ip[64];
 char port[8];
 char name[32];
 int max_x, max_y, log_x, log_y;
 int new_x, new_y;
-char input[1024];
 bool connected, started;
 int points;
 int lastroom = 0;
@@ -76,18 +74,18 @@ int friendcount = 0;
 char pastcommand[100];
 
 //Struct arrays for storing stuff in current room
-struct character players[OTHER_MAX];
-struct character enemies[OTHER_MAX];
-struct room rooms[OTHER_MAX];
-struct character friends[OTHER_MAX];
+//struct character players[OTHER_MAX];
+//struct character enemies[OTHER_MAX];
+//struct room rooms[OTHER_MAX];
+//struct character friends[OTHER_MAX];
 
-//const size_t charactersize = sizeof(struct character) * OTHER_MAX;
-//const size_t roomsize = sizeof(struct room) * OTHER_MAX;
+const size_t charactersize = (sizeof(struct character) * OTHER_MAX);
+const size_t roomsize = sizeof(struct room) * OTHER_MAX;
 
-//struct character* players = malloc(charactersize);
-//struct character* enemies = malloc(charactersize);
-//struct room* rooms = malloc(roomsize);
-//struct character* friends = malloc(charactersize);
+struct character* players;
+struct character* enemies;
+struct room* rooms;
+struct character* friends;
 
 void newgetstr(WINDOW* win, char* in){
 	int c;
@@ -157,25 +155,23 @@ void newgetstr(WINDOW* win, char* in){
 }
 
 //Prompts the user in the input window with provided string and returns answer in input buffer
-char* request(WINDOW* in, char* enter){
-	input[0] = 0;
+char* request(WINDOW* in, char* enter, char* input){
 	mvwprintw(in,0,0,"%s",enter);
-	//wgetstr(in, input);
-	newgetstr(in, input);
+	wgetstr(in, input);
+	//newgetstr(in, input);
 	wclear(in);
 	return input;
 }
 
 //Normal get input
-void get_input(void* arg){
+void get_input(void* arg, char* input){
 	struct input_info* ii = (struct input_info*)arg;
-	input[0] = 0;
 	//mvwprintw(ii->inputwin,0,0,">");
 	mvwaddstr(ii->inputwin,0,0,">");
 	wmove(ii->inputwin,0,1);
 	wrefresh(ii->inputwin);
-	//wgetstr(ii->inputwin, input);
-	newgetstr(ii->inputwin, input);
+	wgetstr(ii->inputwin, input);
+	//newgetstr(ii->inputwin, input);
 	wprintw(ii->log,"<%s> %s\n", players[0].name, input);
 	wrefresh(ii->log);
 	wclear(ii->inputwin);
@@ -492,7 +488,6 @@ void *server_handler(void *arg){
 		wprintw(outputs->log, "<debug> Server thread started!\n");
 		wrefresh(outputs->log);
 	}
-	pthread_mutex_lock(&mutex);
 	for(;;){
 		//Refresh windows and make sure type is zeroed out
 		type = 0;
@@ -502,9 +497,7 @@ void *server_handler(void *arg){
 		doupdate();
 		//wmove(outputs->input,0,1);
 		//READ FIRST BYTE
-		pthread_mutex_unlock(&mutex);
 		connectcheck = read(outputs->skt, &type, 1);
-		pthread_mutex_lock(&mutex);
 		if(connectcheck==0){ //Checks to see if the connection is still around. If not then the thread ends and you are to enter in a new IP and Port
 			wattron(outputs->log,COLOR_PAIR(2));
 			wprintw(outputs->log,"<local> Disconnected from server\n");
@@ -512,7 +505,6 @@ void *server_handler(void *arg){
 			wrefresh(outputs->log);
 			characcept = false;
 			started = false;
-			pthread_mutex_unlock(&mutex);
 			break;
 
 		}
@@ -601,10 +593,11 @@ void *server_handler(void *arg){
 			
 			bool stored = false;
 			if(verbose){
+				char bits[10];
 				wprintw(outputs->log,"<debug> Received character:\n");
 				wprintw(outputs->log,"\tName: %s\n",tempc.name);
 				wprintw(outputs->log,"\tDescription: %s\n",tempc.desc);
-				wprintw(outputs->log,"\tFlags: %s|",itobstr(tempc.flags,input));
+				wprintw(outputs->log,"\tFlags: %s|",itobstr(tempc.flags,bits));
 				wprintw(outputs->log,"ATK: %d|",tempc.attack);
 				wprintw(outputs->log,"DEF: %d|",tempc.defence);
 				wprintw(outputs->log,"REG: %d|",tempc.regen);
@@ -888,6 +881,12 @@ void resize_window(void *arg){
 
 //Main loop that sets up curses, sets up the connection, starts the server thread, and listens for user input along with updating the windows
 int main(int argc, char ** argv){
+	players = malloc(charactersize);
+	enemies = malloc(charactersize);
+	rooms = malloc(roomsize);
+	friends = malloc(charactersize);
+
+	char tempin[1024];
 	pastcommand[0] = 0;
 	//curses start
 	signal(SIGINT,handle_signal);
@@ -899,8 +898,8 @@ int main(int argc, char ** argv){
 	WINDOW *inputwin = newwin(1, max_x, max_y-1, 0);
 	getmaxyx(log,log_y,log_x);
 	scrollok(log,true);
-	noecho();
-	cbreak();
+	//noecho();
+	//cbreak();
 	keypad(inputwin,true);
 	
 	
@@ -969,8 +968,8 @@ int main(int argc, char ** argv){
 typeconnect:
 		wprintw(log, "<local> Please enter connection address followed by the port\n");
 		wrefresh(log);
-		strcpy(tempip,request(inputwin,"IP: "));
-		strcpy(tempport,request(inputwin,"Port: "));
+		strcpy(tempip,request(inputwin,"IP: ",tempin));
+		strcpy(tempport,request(inputwin,"Port: ",tempin));
 		strcpy(ip, tempip);
 		strcpy(port, tempport);
 		mvwprintw(log,log_y-1,0,"<local> Connecting to: %s %s\n", tempip, tempport);
@@ -1027,11 +1026,11 @@ typeconnect:
 	endwin();
 	refresh();
 
-	pthread_mutex_lock(&mutex);
 	for(;;){ // Main loop starts here
 		/*if(connected == false){
 			goto typeconnect;//Kicks you back if disconnected
 		}*/
+		char input[1024];
 		resize_window(&rinfo); //Update stuff
 		update_header(header);
 		update_pstatus(pstatus);
@@ -1040,9 +1039,7 @@ typeconnect:
 		wmove(inputwin,0,1);
 		wrefresh(log);
 		wclear(inputwin);
-		pthread_mutex_unlock(&mutex);
-		get_input(&ii); //Get input
-		pthread_mutex_lock(&mutex);
+		get_input(&ii,input); //Get input
 		wrefresh(log);
 		if(!(input[0]=='/' || input[0] == 0)){//If text is entered with no / then it is sent as a message with no recipiant(would be nice for global chat)
 			int type = 1;
@@ -1090,9 +1087,9 @@ typeconnect:
 						wprintw(log,"\t%s\n",players[i].name);
 					}
 					wrefresh(log);
-					strcpy(send.rname,request(inputwin,"Recipient: "));
+					strcpy(send.rname,request(inputwin,"Recipient: ",input));
 				}else strcpy(send.rname,token);
-				strcpy(send.msg,request(inputwin,"Message: "));
+				strcpy(send.msg,request(inputwin,"Message: ",input));
 				send.length = strlen(send.msg)+1;
 				if(verbose){
 					wprintw(log,"<debug> Sending message:\n");
@@ -1115,13 +1112,13 @@ typeconnect:
 					wprintw(log,"\t%d: %s\n",i,players[i].name);
 				}
 				wrefresh(log);
-				numget = atoi(request(inputwin,"Recipient number: "));
+				numget = atoi(request(inputwin,"Recipient number: ",input));
 				if(numget < 0)numget = 0;
 				if(numget > playercount)numget = 0;
 				strcpy(send.rname, players[numget].name);
 				wprintw(log,"<local> Sending to: %s\n",send.rname);
 				wrefresh(log);
-				strcpy(send.msg,request(inputwin,"Message: "));
+				strcpy(send.msg,request(inputwin,"Message: ",input));
 				send.length = strlen(send.msg)+1;
 				if(verbose){
 					wprintw(log,"<debug> Sending message:\n");
@@ -1141,7 +1138,7 @@ typeconnect:
 				}
 			}
 			else if(!strcmp(input,"/quit") || !strcmp(input,"/q") || !strcmp(input,"/exit")){ //Nicely quits using the lurk_leave command and all the good stuff
-				if(!strcmp(request(inputwin,"Really quit?(y/n): "),"y")){
+				if(!strcmp(request(inputwin,"Really quit?(y/n): ",input),"y")){
 					wprintw(log,"<local> Quitting...\n");
 					wrefresh(log);
 					lurk_leave(skt);
@@ -1154,7 +1151,7 @@ typeconnect:
 				if(!characcept){			
 					wprintw(log,"<local> Logging in...\n");
 					token = strtok_r(NULL,"",&stay);
-					if(token == NULL)strcpy(players[0].name, request(inputwin,"Enter Name: "));//If no name was given for second token
+					if(token == NULL)strcpy(players[0].name, request(inputwin,"Enter Name: ",input));//If no name was given for second token
 					else strcpy(players[0].name,token);
 
 					players[0].attack = points*.6;
@@ -1197,22 +1194,22 @@ typeconnect:
 					wprintw(log,"<local> Creating character...\n");
 
 					wrefresh(log);
-					strcpy(players[0].name, request(inputwin,"Enter Name: "));
+					strcpy(players[0].name, request(inputwin,"Enter Name: ",input));
 				
-					strcpy(players[0].desc, request(inputwin,"Enter Description: "));
+					strcpy(players[0].desc, request(inputwin,"Enter Description: ",input));
 					players[0].descl = strlen(players[0].desc) + 1;
 			
 					mvwprintw(pstatus,1,0,"Remaining points: %d     ", points);
 					wrefresh(pstatus);
-					players[0].attack = atoi(request(inputwin,"Enter Attack: "));
+					players[0].attack = atoi(request(inputwin,"Enter Attack: ",input));
 	
 					mvwprintw(pstatus,1,0,"Remaining points: %d     ", points-players[0].attack);
 					wrefresh(pstatus);
-					players[0].defence = atoi(request(inputwin,"Enter Defense: "));
+					players[0].defence = atoi(request(inputwin,"Enter Defense: ",input));
 	
 					mvwprintw(pstatus,1,0,"Remaining points: %d     ", points-players[0].attack-players[0].defence);
 					wrefresh(pstatus);
-					players[0].regen = atoi(request(inputwin,"Enter Regen: "));
+					players[0].regen = atoi(request(inputwin,"Enter Regen: ",input));
 				
 					mvwprintw(pstatus,1,0,"                            ");
 					wrefresh(pstatus);
@@ -1224,7 +1221,7 @@ typeconnect:
 					wprintw(log,"\tRegen: %d\n\n", players[0].regen);
 					wprintw(log,"<local> Is this correct?(y/n)\n");
 					wrefresh(log);
-					if(!strcmp(request(inputwin,"(y/n): "),"y")){
+					if(!strcmp(request(inputwin,"(y/n): ",input),"y")){
 	
 						wprintw(log,"<local> Sending...\n");
 						wrefresh(log);
@@ -1289,7 +1286,7 @@ typeconnect:
 						wprintw(log,"\t%s\n",players[i].name);
 					}
 					wrefresh(log);
-					strcpy(name,request(inputwin,"WhoToFight: "));
+					strcpy(name,request(inputwin,"WhoToFight: ",input));
 				}else strcpy(name,token);
 				wprintw(log,"<local> Picking a fight with %s\n",name);
 				wrefresh(log);
@@ -1307,7 +1304,7 @@ typeconnect:
 					wprintw(log,"\t%d: %s\n",i,players[i].name);
 				}
 				wrefresh(log);
-				pvpnum = atoi(request(inputwin,"Target number: "));
+				pvpnum = atoi(request(inputwin,"Target number: ",input));
 				if(pvpnum < 0)pvpnum = 0;
 				if(pvpnum > playercount)pvpnum = 0;
 				wprintw(log,"<local> Picking a fight with %s\n",players[pvpnum].name);
@@ -1335,7 +1332,7 @@ typeconnect:
 						}
 					}
 					wrefresh(log);
-					strcpy(lname,request(inputwin,"WhoToLoot: "));
+					strcpy(lname,request(inputwin,"WhoToLoot: ",input));
 					
 				}else strcpy(lname,token);
 				wprintw(log,"<local> Looting: %s\n", lname);
@@ -1356,7 +1353,7 @@ typeconnect:
 					}
 				}
 				wrefresh(log);
-				lnumber = atoi(request(inputwin,"WhoToLoot: "))-1;
+				lnumber = atoi(request(inputwin,"WhoToLoot: ",input))-1;
 				if(lnumber < 0)lnumber = 0;
 				if(lnumber > playercount)lnumber = 0;
 				wprintw(log,"<local> Looting: %s\n", players[lnumber].name);
@@ -1377,7 +1374,7 @@ typeconnect:
 					}
 				}
 				wrefresh(log);
-				lnumber = atoi(request(inputwin,"WhoToLoot: "))-1;
+				lnumber = atoi(request(inputwin,"WhoToLoot: ",input))-1;
 				if(lnumber < 0)lnumber = 0;
 				if(lnumber > enemycount)lnumber = 0;
 				wprintw(log,"<local> Looting: %s\n", enemies[lnumber].name);
@@ -1407,7 +1404,7 @@ typeconnect:
 						wprintw(log,"\t%s\n",rooms[i].name);
 					}
 					wrefresh(log);
-					strcpy(name,request(inputwin,"Room name: "));
+					strcpy(name,request(inputwin,"Room name: ",input));
 				}else strcpy(name,token);
 
 				for(int i = 0; i < connectioncount; i++){
@@ -1442,7 +1439,7 @@ typeconnect:
 						wprintw(log,"\t%d %s\n",rooms[i].number,rooms[i].name);
 					}
 					wrefresh(log);
-					roomnum =  atoi(request(inputwin,"Room number: "));
+					roomnum =  atoi(request(inputwin,"Room number: ",input));
 				} else roomnum = atoi(token);
 				wprintw(log,"<local> Going to room %d\n", roomnum);
 				wrefresh(log);
@@ -1462,7 +1459,7 @@ typeconnect:
 				}
 				
 				wrefresh(log);
-				roomnum =  atoi(request(inputwin,"Room number: "));
+				roomnum =  atoi(request(inputwin,"Room number: ",input));
 				if(roomnum < 0)roomnum = 0;
 				if(roomnum > connectioncount)roomnum = 0;
 				wprintw(log,"<local> Going to %s\n", rooms[roomnum].name);
@@ -1558,7 +1555,7 @@ typeconnect:
 					wprintw(log,"\trooml\n");
 					wrefresh(log);
 					
-					strcpy(type,request(inputwin,"Lookat type: "));
+					strcpy(type,request(inputwin,"Lookat type: ",input));
 				} else strcpy(type,token);
 				
 				if(!strcmp(type,"players")){
@@ -1592,7 +1589,7 @@ typeconnect:
 						wprintw(log,"\t%d: %s\n",i+1,players[i].name);
 						wrefresh(log);
 					}
-					looknum = atoi(request(inputwin,"Lookat number: "))-1;
+					looknum = atoi(request(inputwin,"Lookat number: ",input))-1;
 					if(looknum < 0)looknum = 0;
 					if(looknum > playercount)looknum = 0;
 					mvwprintw(log,log_y-1,0,"<local> Player: %s\n", players[looknum].name);
@@ -1622,7 +1619,7 @@ typeconnect:
 							wprintw(log,"\t%d: %s\n",i+1,enemies[i].name);
 							wrefresh(log);
 						}
-						looknum = atoi(request(inputwin,"Lookat number: "))-1;
+						looknum = atoi(request(inputwin,"Lookat number: ",input))-1;
 						if(looknum < 0)looknum = 0;
 						if(looknum > enemycount)looknum = 0;
 						mvwprintw(log,log_y-1,0,"<local> Enemy: %s\n", enemies[looknum].name);
@@ -1652,7 +1649,7 @@ typeconnect:
 						wprintw(log,"\t%d: %s\n",i+1,rooms[i].name);
 						wrefresh(log);
 					}
-					looknum = atoi(request(inputwin,"Lookat number: "))-1;
+					looknum = atoi(request(inputwin,"Lookat number: ",input))-1;
 					if(looknum < 0)looknum = 0;
 					if(looknum > connectioncount)looknum = 0;
 					mvwprintw(log,log_y-1,0,"<local> Room: %s\n", rooms[looknum].name);
@@ -1690,7 +1687,7 @@ typeconnect:
 							}
 							wrefresh(log);
 						}
-						strcpy(name,request(inputwin,"Lookat name: "));
+						strcpy(name,request(inputwin,"Lookat name: ",input));
 						
 					} else strcpy(name,token);
 				
@@ -1781,7 +1778,7 @@ typeconnect:
 						wprintw(log,"\t%s\n",players[i].name);
 					}
 					wrefresh(log);
-					strcpy(name,request(inputwin,"Whotofriend: "));
+					strcpy(name,request(inputwin,"Whotofriend: ",input));
 				}else strcpy(name,token);
 				for(int i = 0; i < playercount; i++){
 					if(!strcmp(name,players[i].name)){
@@ -1808,7 +1805,7 @@ typeconnect:
 					wprintw(log,"\t%d: %s\n",i,players[i].name);
 				}
 				wrefresh(log);
-				numget = atoi(request(inputwin,"Player number: "));
+				numget = atoi(request(inputwin,"Player number: ",input));
 				if(numget < 0)numget = 0;
 				if(numget > playercount)numget = 0;
 				friends[friendcount] = players[numget];
@@ -1913,7 +1910,7 @@ typeconnect:
 				wrefresh(log);
 			}
 			else if(!strcmp(input,"/itobstr")){ //Test deal for converting an integer to bit string
-				int a = atoi(request(inputwin,"Number: "));
+				int a = atoi(request(inputwin,"Number: ",input));
 				wprintw(log,"<local> %d translates to %s\n", a, itobstr(a,input));
 				wrefresh(log);
 			}
