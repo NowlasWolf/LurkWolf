@@ -4,6 +4,7 @@
  *Created by Alexander Romero 2018
  */
 #include<stdio.h>
+//#include<cstring.h>
 #include "lurk.h"
 
 
@@ -235,7 +236,7 @@ void lurk_connection(int skt, int mode, void* pkt){
 		read(skt, &inconnection->desc, inconnection->descl);
 	}
 }
-
+//TYPE 14 VERSION NOTE: For Lurk 2.2 I think. Meant to describe version compatibility and extentions
 void lurk_version(int skt, int mode, void* pkt){
 	if(mode == 0){
 		struct version* outversion = (struct version*)pkt;

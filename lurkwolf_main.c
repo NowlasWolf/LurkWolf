@@ -37,7 +37,7 @@ struct input_info { //Struct that is used mostly for input
 
 // A variety of global variables
 int skt;
-float version = 1.06;
+float version = 1.07;
 char ip[64];
 char port[8];
 char name[32];
