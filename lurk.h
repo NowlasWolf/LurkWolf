@@ -12,7 +12,7 @@ struct character {
 	int attack;
 	int defence;
 	int regen;
-	signed int health;
+	signed short health;
 	int gold;
 	int room;
 	int descl;
@@ -44,6 +44,13 @@ struct error{
 	int code;
 	int msgl;
 	char msg[1024*64];
+};
+
+struct version{
+	int majorrev;
+	int minorrev;
+	int extl;
+	char ext[1024*64];
 };
 
 //char readstring[1024*1024];
@@ -81,5 +88,6 @@ void lurk_leave(int skt);
 
 void lurk_connection(int skt, int mode, void* pkt);
 
+void lurk_version(int skt, int mode, void* pkt);
 
 #endif

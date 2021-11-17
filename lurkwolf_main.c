@@ -86,6 +86,7 @@ struct character* players;
 struct character* enemies;
 struct room* rooms;
 struct character* friends;
+struct version cversion;
 
 void newgetstr(WINDOW* win, char* in){
 	int c;
@@ -470,6 +471,8 @@ void update_extrawin(WINDOW* win1, WINDOW* win2){
 
 
 void removeplayer(int playernum){
+	struct character tempc = {0};
+	players[playercount] = tempc;
 	for(int i=playernum; i<playercount-1; i++){
 		memmove(&players[i],&players[i+1],sizeof(struct character));
 	}
@@ -512,7 +515,48 @@ void *server_handler(void *arg){
 			wprintw(outputs->log, "<debug> Receiving %d\n", type);
 			wrefresh(outputs->log);
 		}*/
+		if(type == 14){
+			struct version tempv = {0};
+			lurk_version(skt,1,&tempv);
+			tempv.ext[tempv.extl] = 0;
+			if(verbose){
+				wprintw(outputs->log, "<debug> Received version: %d.%d\n",tempv.majorrev,tempv.minorrev);
+				wprintw(outputs->log, "\tMajor Revision: %d\n",tempv.majorrev);
+				wprintw(outputs->log, "\tMinor Revision: %2d\n",tempv.minorrev);
+				wprintw(outputs->log, "\tExtention Length: %d|",tempv.extl);
+				wprintw(outputs->log, "Extentions: %s\n",tempv.ext);
+				wrefresh(outputs->log);
+			}
+			//Non verbose output for reporting 
 
+			wprintw(outputs->log, "<local> Server reported LURK version: %d.%d\n",tempv.majorrev,tempv.minorrev);
+			if(tempv.extl != 0){
+				wprintw(outputs->log, "\tServer supports extentions:\n");
+				int location = 0;
+				int extlen;
+				int extnum;
+				char *ext;
+				while(location < tempv.extl){
+					extnum++;
+					memcpy(&extlen,&tempv.ext+location,2);
+					location += 2;
+					memcpy(ext,&tempv.ext+location,extlen);
+					wprintw(outputs->log, "\t%d: %s\n",extnum,ext);
+					location += extlen;
+				}
+			}
+			wrefresh(outputs->log);
+
+			if(verbose){
+				wprintw(outputs->log, "<debug> Sending version: %d.%d\n",cversion.majorrev,cversion.minorrev);
+				wprintw(outputs->log, "\tMajor Revision: %d\n",cversion.majorrev);
+				wprintw(outputs->log, "\tMinor Revision: %2d\n",cversion.minorrev);
+				wprintw(outputs->log, "\tExtention Length: %d|",cversion.extl);
+				wprintw(outputs->log, "Extentions: %s\n",cversion.ext);
+				wrefresh(outputs->log);
+			}
+			lurk_version(skt,0,&cversion);
+		}
 
 		if(type == 13){ //CONNECTION Gets connection packets and stores them in rooms and increments connection count. Packets are checked against existing data to update if needed
 			bool stored = false;
@@ -885,6 +929,11 @@ int main(int argc, char ** argv){
 	enemies = malloc(charactersize);
 	rooms = malloc(roomsize);
 	friends = malloc(charactersize);
+
+	cversion.majorrev = 2;
+	cversion.minorrev = 2;
+	cversion.extl = 0;
+	cversion.ext[0] = '\0';
 
 	char tempin[1024];
 	pastcommand[0] = 0;

@@ -235,3 +235,22 @@ void lurk_connection(int skt, int mode, void* pkt){
 		read(skt, &inconnection->desc, inconnection->descl);
 	}
 }
+
+void lurk_version(int skt, int mode, void* pkt){
+	if(mode == 0){
+		struct version* outversion = (struct version*)pkt;
+		int type = 14;
+		write(skt, &type, 1);
+		write(skt, &outversion->majorrev, 1);
+		write(skt, &outversion->minorrev, 1);
+		write(skt, &outversion->extl, 2);
+		write(skt, &outversion->ext, outversion->extl);
+	}	
+	else if(mode == 1){
+		struct version* inversion = (struct version*)pkt;
+		read(skt, &inversion->majorrev, 1);
+		read(skt, &inversion->minorrev, 1);
+		read(skt, &inversion->extl, 2);
+		read(skt, &inversion->ext, inversion->extl);
+	}
+}
